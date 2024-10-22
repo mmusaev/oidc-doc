@@ -1,21 +1,27 @@
-No, it is not deterministic that ASP.NET will always resume on the **same thread** that initiated the request, even though the **SynchronizationContext** is captured. The **SynchronizationContext** ensures that the continuation is executed in the same *context* in which the task was awaited, but not necessarily on the exact same thread.
+No, it is not deterministic that ASP.NET will always resume on the **same thread** that initiated the request, even though the **SynchronizationContext** is captured. The **SynchronizationContext** ensures that the continuation is executed
+in the same *context* in which the task was awaited, but not necessarily on the exact same thread.
 
 Here’s a breakdown of how it works:
 
 ### **SynchronizationContext in ASP.NET**
 In an ASP.NET application, the **SynchronizationContext** captures the request's *logical context*. This context includes things like the request lifecycle and certain thread-local storage, but not the specific thread.
 
-- **Captured Context**: By default, in ASP.NET, when `await` is used without `ConfigureAwait(false)`, the `SynchronizationContext` is captured, and ASP.NET ensures that the continuation runs in the same logical request context after the awaited task completes. This guarantees that subsequent code has access to the current HTTP request and other ASP.NET-specific context.
+- **Captured Context**: By default, in ASP.NET, when `await` is used without `ConfigureAwait(false)`, the `SynchronizationContext` is captured, and ASP.NET ensures that the continuation runs in the same logical request context after the awaited
+task completes. This guarantees that subsequent code has access to the current HTTP request and other ASP.NET-specific context.
 
-- **Thread-Pool-Based**: The ASP.NET SynchronizationContext, unlike the one in a Windows Forms or WPF application, does not rely on a specific thread (like the UI thread). Instead, it may execute the continuation on any available thread from the thread pool. So, even though it captures the `SynchronizationContext`, it could be a *different thread* from the thread that initially handled the request.
+- **Thread-Pool-Based**: The ASP.NET SynchronizationContext, unlike the one in a Windows Forms or WPF application, does not rely on a specific thread (like the UI thread). Instead, it may execute the continuation on any available thread 
+from the thread pool. So, even though it captures the `SynchronizationContext`, it could be a *different thread* from the thread that initially handled the request.
 
 ### **Behavior with and without SynchronizationContext**
-- **Without ConfigureAwait(false)**: When `ConfigureAwait(false)` is not used, ASP.NET captures the `SynchronizationContext`, and upon resuming after the `await`, it ensures the code runs in the context of the original HTTP request (i.e., within the same logical request handling environment), but potentially on a different thread from the thread pool.
+- **Without ConfigureAwait(false)**: When `ConfigureAwait(false)` is not used, ASP.NET captures the `SynchronizationContext`, and upon resuming after the `await`, it ensures the code runs in the context of the original HTTP request 
+(i.e., within the same logical request handling environment), but potentially on a different thread from the thread pool.
   
-- **With ConfigureAwait(false)**: Using `ConfigureAwait(false)` prevents the `SynchronizationContext` from being captured. The continuation can run on any thread without needing to return to the same logical context. This avoids potential deadlocks and improves performance by not requiring synchronization with the ASP.NET request context.
+- **With ConfigureAwait(false)**: Using `ConfigureAwait(false)` prevents the `SynchronizationContext` from being captured. The continuation can run on any thread without needing to return to the same logical context. This avoids potential 
+deadlocks and improves performance by not requiring synchronization with the ASP.NET request context.
 
 ### **Same Thread or Different Thread?**
-It is not deterministic whether the continuation will run on the **same thread** that started the request. The important point is that, by default, ASP.NET ensures that the continuation happens in the same **logical context** (request handling environment). The thread handling the continuation may come from the thread pool, and thus it could be a different thread.
+It is not deterministic whether the continuation will run on the **same thread** that started the request. The important point is that, by default, ASP.NET ensures that the continuation happens in the same **logical context**
+(request handling environment). The thread handling the continuation may come from the thread pool, and thus it could be a different thread.
 
 ### Example:
 ```csharp
@@ -36,4 +42,5 @@ await Task.Delay(1000).ConfigureAwait(false); // No SynchronizationContext captu
 ```
 
 ### Summary
-The **ASP.NET SynchronizationContext** captures the logical context of the request but not a specific thread. Therefore, it's not deterministic that the continuation will run on the same thread—it could be any thread from the pool, though it will be in the same logical request context unless you use `ConfigureAwait(false)` to avoid that.
+The **ASP.NET SynchronizationContext** captures the logical context of the request but not a specific thread. Therefore, it's not deterministic that the continuation will run on the same thread—it could be any thread from the pool, 
+though it will be in the same logical request context unless you use `ConfigureAwait(false)` to avoid that.
