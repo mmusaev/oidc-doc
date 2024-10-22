@@ -1,0 +1,28 @@
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web;
+
+namespace WebNet4_8
+{
+    public class SomeService
+    {
+        private static AsyncLocal<HttpContext> _asyncHttpContext = new AsyncLocal<HttpContext>();
+
+        public static HttpContext CurrentHttpContext
+        {
+            get => _asyncHttpContext.Value ?? HttpContext.Current;
+            set => _asyncHttpContext.Value = value;
+        }
+
+        public async Task SomeAsyncMethod()
+        {
+            var context = CurrentHttpContext;
+            var user = context?.User;
+
+            await Task.Delay(1000);
+
+            var user2 = HttpContext.Current.User;
+            var newUser = CurrentHttpContext?.User;
+        }
+    }
+}
