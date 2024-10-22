@@ -1,3 +1,36 @@
+
+In an ASP.NET Framework application, using `Task.Run(async () => ...)`, followed by `t.Wait()` or accessing `t.Result`, can introduce several pitfalls, especially when used in the context of a web request. Here's a breakdown of the common issues:
+
+### 1. **Blocking the Thread**
+   - `t.Wait()` and `t.Result` are synchronous calls, which block the current thread until the task completes. In an ASP.NET application, blocking the thread can lead to **thread starvation**. Since ASP.NET Framework uses a limited thread pool to handle requests, blocking a thread may reduce the number of available threads to serve other requests, leading to reduced throughput and performance issues.
+
+### 2. **Deadlocks**
+   - **Deadlocks** are one of the most common problems caused by mixing async/await with blocking calls like `Wait()` and `Result()`. This happens because ASP.NET by default captures the **SynchronizationContext** and attempts to resume execution on the same thread that initiated the request. When you block with `Wait()` or `Result()`, the thread is already occupied, causing a deadlock because the task can't complete and release the thread.
+
+### 3. **Thread Pool Saturation**
+   - Even if deadlocks don't occur, blocking threads unnecessarily can cause thread pool saturation, especially under high load. This causes other requests to wait longer for available threads, reducing overall responsiveness of the application.
+
+### 4. **Unobserved Task Exceptions**
+   - When using `t.Wait()` or `t.Result()`, any exception that occurs within the task might get wrapped in an `AggregateException`, which may go unnoticed or be improperly handled. If you don't handle this properly, it can lead to **unobserved task exceptions**, which might crash the application or cause unexpected behavior.
+
+### **Best Practices:**
+1. **Use async/await all the way**: Avoid calling `Wait()` or accessing `Result` on tasks. Instead, make the calling methods `async` and use `await` to ensure that you're not blocking the request thread. In ASP.NET, you should strive to use asynchronous programming for I/O-bound operations like database access, file reading, or external API calls.
+   ```csharp
+   var result = await Task.Run(() => ...);
+   ```
+
+2. **ConfigureAwait(false)**: If you're not updating the UI or need to continue on the same context, use `ConfigureAwait(false)` to avoid resuming on the captured context and reduce the chances of deadlocks.
+   ```csharp
+   var result = await Task.Run(() => ...).ConfigureAwait(false);
+   ```
+
+3. **Avoid synchronous waits on tasks**: If you cannot avoid blocking a task, use `Task.GetAwaiter().GetResult()` instead of `Result` or `Wait()`, as this doesn't wrap exceptions in an `AggregateException`.
+
+By following these guidelines, you can avoid common pitfalls like deadlocks and improve the scalability of your ASP.NET Framework application.
+_____________________________________________________________________________________________________________________________________________________________________
+
+Is it deterministic that asp.net tries to resume on the same thread that initiated the request because of the captured SynchronizationContext?
+
 No, it is not deterministic that ASP.NET will always resume on the **same thread** that initiated the request, even though the **SynchronizationContext** is captured. The **SynchronizationContext** ensures that the continuation is executed
 in the same *context* in which the task was awaited, but not necessarily on the exact same thread.
 
@@ -44,3 +77,99 @@ await Task.Delay(1000).ConfigureAwait(false); // No SynchronizationContext captu
 ### Summary
 The **ASP.NET SynchronizationContext** captures the logical context of the request but not a specific thread. Therefore, it's not deterministic that the continuation will run on the same thread—it could be any thread from the pool, 
 though it will be in the same logical request context unless you use `ConfigureAwait(false)` to avoid that.
+
+
+Using `HttpContext.Current` in a library that is consumed by an ASP.NET Framework application with `async/await` methods can lead to several pitfalls, mainly due to the nature of `HttpContext.Current` and how it interacts with asynchronous code. Here's a detailed look at the key issues:
+
+### **1. `HttpContext.Current` Is Thread-Local**
+`HttpContext.Current` is stored in a **thread-local storage** (TLS). This means that it is bound to the thread that is currently handling the HTTP request. In synchronous ASP.NET code, this isn't usually an issue because the same thread handles the request throughout the lifecycle.
+
+However, with `async/await`, the **continuation** after an `await` may run on a **different thread** (especially if `ConfigureAwait(false)` is used or if there is heavy thread pool usage). Since `HttpContext.Current` is thread-local, it may be `null` when the continuation runs on a different thread, even though it was populated earlier in the method.
+
+#### Example:
+```csharp
+public async Task SomeAsyncMethod()
+{
+    // HttpContext.Current is available here.
+    var user = HttpContext.Current.User;
+
+    await Task.Delay(1000);  // After this, the continuation may resume on a different thread.
+
+    // HttpContext.Current could be null here.
+    var newUser = HttpContext.Current.User;  // This might throw a NullReferenceException.
+}
+```
+
+#### **Pitfall**: If your library relies on `HttpContext.Current`, you risk `NullReferenceException` or accessing outdated or invalid context information after an `await`, since the continuation could occur on a thread where `HttpContext.Current` is `null`.
+
+### **2. Potential for NullReferenceException**
+As mentioned, after an `await`, `HttpContext.Current` could be `null`. If the library depends on `HttpContext.Current` at any point, accessing it in an `async` method after an `await` risks a `NullReferenceException`, which could crash your application or cause unintended behavior.
+
+### **3. Hard to Test and Mock**
+Libraries relying on `HttpContext.Current` are more difficult to test in isolation because `HttpContext.Current` is static and thread-bound. It requires setting up an HTTP context, which adds complexity to unit tests. This can make mocking or simulating requests for unit testing much harder, and dependencies on it are harder to control compared to using dependency injection.
+
+### **4. Hidden Dependency**
+Relying on `HttpContext.Current` in a library introduces a **hidden dependency** on the HTTP context, which might not be obvious from the method signatures. It couples your library tightly to ASP.NET and reduces the reusability of the library in non-web contexts (e.g., if used in background services, console apps, or different hosting environments).
+
+### **5. Lack of Control Over Continuation Context**
+By default, when using `await` in ASP.NET Framework without `ConfigureAwait(false)`, the continuation tries to resume on the original synchronization context (the request-handling thread). However, as noted earlier, if `ConfigureAwait(false)` is used, the continuation will run on a different thread, where `HttpContext.Current` is no longer available.
+
+Even without `ConfigureAwait(false)`, under high load, ASP.NET might run the continuation on a different thread due to thread pool scheduling. This unpredictability makes it difficult to rely on `HttpContext.Current` in asynchronous code.
+
+### **Best Practices to Avoid These Pitfalls:**
+
+1. **Pass HttpContext as a Parameter**:
+   Instead of relying on `HttpContext.Current` directly inside the library, you can pass the relevant data from `HttpContext` (like user information or request details) as parameters to the methods in your library. This keeps the library decoupled from `HttpContext.Current` and allows the client code to manage the HTTP context.
+
+   ```csharp
+   public async Task SomeAsyncMethod(HttpContext context)
+   {
+       var user = context.User;  // Use the passed-in context instead of HttpContext.Current
+       await Task.Delay(1000);
+   }
+   ```
+
+2. **Capture HttpContext at the Start**:
+   If you must access `HttpContext.Current`, capture it at the start of your method before the asynchronous work begins and pass the necessary information forward.
+
+   ```csharp
+   public async Task SomeAsyncMethod()
+   {
+       var context = HttpContext.Current;  // Capture HttpContext.Current before async operation
+       var user = context?.User;
+
+       await Task.Delay(1000);
+
+       // Use the captured context, even after the continuation.
+       var newUser = context?.User;
+   }
+   ```
+
+3. **Use Async-Local Storage**:
+   For a more advanced solution, you can store the `HttpContext` in an `AsyncLocal<T>` variable. `AsyncLocal<T>` provides a mechanism similar to thread-local storage but works with asynchronous flows, maintaining the value across asynchronous continuations.
+
+   ```csharp
+   private static AsyncLocal<HttpContext> _asyncHttpContext = new AsyncLocal<HttpContext>();
+
+   public static HttpContext CurrentHttpContext
+   {
+       get => _asyncHttpContext.Value ?? HttpContext.Current;
+       set => _asyncHttpContext.Value = value;
+   }
+
+   public async Task SomeAsyncMethod()
+   {
+       var context = CurrentHttpContext;
+       var user = context?.User;
+
+       await Task.Delay(1000);
+
+       var newUser = CurrentHttpContext?.User;
+   }
+   ```
+
+   **Note**: This approach still has some complexity, and it may not be necessary in many scenarios where you can simply pass the relevant context as a method parameter.
+
+### **Summary**
+Using `HttpContext.Current` in an ASP.NET Framework app's asynchronous code presents several pitfalls, mainly due to the fact that `HttpContext.Current` is tied to the thread that handles the request. Once `async/await` is introduced, the continuation may occur on a different thread, leading to `HttpContext.Current` being `null`. To avoid these issues, it's better to either pass `HttpContext` (or relevant information from it) as a parameter, or capture it before asynchronous work begins. Avoid relying on `HttpContext.Current` in asynchronous code whenever possible.
+
